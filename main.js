@@ -93,13 +93,13 @@ const toneMappingOptions = {
 };
 
 const params = {
-  textScale: 0.2,
-  blurMultiplier: 4.0,
+  textScale: 0.1,
+  blurMultiplier: 6.0,
   brightnessBoost: 2.5,
-  mouseRadius: 0.15,
-  mouseFalloff: 0.5,
-  smoothK: 0.3,
-  mouseDamping: 8,
+  mouseRadius: -0.05,
+  mouseFalloff: 0.4,
+  smoothK: 0.1,
+  mouseDamping: 4,
   exposure: 1.0,
   toneMapping: 'ACES',
 };
@@ -158,8 +158,9 @@ scene.add(quad);
 
 camera.position.z = 1;
 
-// --- GUI ---
+// --- GUI (dev only) ---
 const gui = new GUI();
+if (import.meta.env.PROD) gui.hide();
 
 gui.add(params, 'textScale', 0.05, 1.0).name('Text Scale').onChange(v => {
   mat.uniforms.u_textScaleFactor.value = v;
