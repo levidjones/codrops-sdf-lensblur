@@ -52,6 +52,17 @@ const atlasH = fontData.common.scaleH;
 const lineHeight = fontData.common.lineHeight;
 const distRange = fontData.distanceField.distanceRange;
 
+// Compute actual text bounding box (font units)
+let textMinX = Infinity, textMinY = Infinity;
+let textMaxX = -Infinity, textMaxY = -Infinity;
+glyphs.forEach(g => {
+  textMinX = Math.min(textMinX, g.textX);
+  textMinY = Math.min(textMinY, g.textY);
+  textMaxX = Math.max(textMaxX, g.textX + g.width);
+  textMaxY = Math.max(textMaxY, g.textY + g.height);
+});
+const textBBox = new THREE.Vector4(textMinX, textMinY, textMaxX, textMaxY);
+
 // Prepare uniform arrays
 const glyphPos = glyphs.map(g =>
   new THREE.Vector4(g.textX, g.textY, g.width, g.height)
@@ -83,11 +94,11 @@ const toneMappingOptions = {
 
 const params = {
   textScale: 0.2,
-  blurMultiplier: 6.0,
+  blurMultiplier: 4.0,
   brightnessBoost: 2.5,
-  mouseRadius: 0.2,
-  mouseFalloff: 0.8,
-  smoothK: 2.0,
+  mouseRadius: 0.15,
+  mouseFalloff: 0.5,
+  smoothK: 0.3,
   mouseDamping: 8,
   exposure: 1.0,
   toneMapping: 'ACES',
@@ -138,6 +149,7 @@ const mat = new THREE.ShaderMaterial({
     u_mouseRadius: { value: params.mouseRadius },
     u_mouseFalloff: { value: params.mouseFalloff },
     u_smoothK: { value: params.smoothK },
+    u_textBBox: { value: textBBox },
   },
 });
 
