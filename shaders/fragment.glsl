@@ -3,115 +3,104 @@ varying vec2 v_texcoord;
 uniform vec2 u_mouse;
 uniform vec2 u_resolution;
 uniform float u_pixelRatio;
+uniform sampler2D u_msdf;
 
-/* common constants */
-#ifndef PI
-#define PI 3.1415926535897932384626433832795
-#endif
-#ifndef TWO_PI
-#define TWO_PI 6.2831853071795864769252867665590
-#endif
+#define GLYPH_COUNT 15
 
-/* variation constant */
-#ifndef VAR
-#define VAR 0
-#endif
+uniform vec4 u_glyphPos[GLYPH_COUNT];
+uniform vec4 u_glyphUV[GLYPH_COUNT];
+uniform float u_textWidth;
+uniform float u_lineHeight;
+uniform float u_distRange;
 
-/* Coordinate and unit utils */
-#ifndef FNC_COORD
-#define FNC_COORD
-vec2 coord(in vec2 p) {
-    p = p / u_resolution.xy;
-    // correct aspect ratio
-    if (u_resolution.x > u_resolution.y) {
-        p.x *= u_resolution.x / u_resolution.y;
-        p.x += (u_resolution.y - u_resolution.x) / u_resolution.y / 2.0;
-    } else {
-        p.y *= u_resolution.y / u_resolution.x;
-        p.y += (u_resolution.x - u_resolution.y) / u_resolution.x / 2.0;
-    }
-    // centering
-    p -= 0.5;
-    p *= vec2(-1.0, 1.0);
-    return p;
-}
-#endif
+uniform float u_textScaleFactor;
+uniform float u_blurMultiplier;
+uniform float u_brightnessBoost;
+uniform float u_mouseRadius;
+uniform float u_mouseFalloff;
+uniform float u_smoothK;
 
-#define st0 coord(gl_FragCoord.xy)
-#define mx coord(u_mouse * u_pixelRatio)
-
-/* signed distance functions */
-float sdRoundRect(vec2 p, vec2 b, float r) {
-    vec2 d = abs(p - 0.5) * 4.2 - b + vec2(r);
-    return min(max(d.x, d.y), 0.0) + length(max(d, 0.0)) - r;
-}
-float sdCircle(in vec2 st, in vec2 center) {
-    return length(st - center) * 2.0;
-}
-float sdPoly(in vec2 p, in float w, in int sides) {
-    float a = atan(p.x, p.y) + PI;
-    float r = TWO_PI / float(sides);
-    float d = cos(floor(0.5 + a / r) * r - a) * length(max(abs(p) * 1.0, 0.0));
-    return d * 2.0 - w;
+float median(float r, float g, float b) {
+    return max(min(r, g), min(max(r, g), b));
 }
 
-/* antialiased step function */
-float aastep(float threshold, float value) {
-    float afwidth = length(vec2(dFdx(value), dFdy(value))) * 0.70710678118654757;
-    return smoothstep(threshold - afwidth, threshold + afwidth, value);
-}
-/* Signed distance drawing methods */
-float fill(in float x) { return 1.0 - aastep(0.0, x); }
-float fill(float x, float size, float edge) {
-    return 1.0 - smoothstep(size - edge, size + edge, x);
-}
-
-float stroke(in float d, in float t) { return (1.0 - aastep(t, abs(d))); }
-float stroke(float x, float size, float w, float edge) {
-    float d = smoothstep(size - edge, size + edge, x + w * 0.5) - smoothstep(size - edge, size + edge, x - w * 0.5);
-    return clamp(d, 0.0, 1.0);
+// Polynomial smooth max - rounds off sharp seams between glyph contributions
+float smax(float a, float b, float k) {
+    float h = max(k - abs(a - b), 0.0) / k;
+    return max(a, b) + h * h * k * 0.25;
 }
 
 void main() {
-    vec2 pixel = 1.0 / u_resolution.xy;
-    vec2 st = st0 + 0.5;
-    vec2 posMouse = mx * vec2(1., -1.) + 0.5;
-    
-    /* sdf (Round Rect) params */
-    float size = 1.2;
-    float roundness = 0.4;
-    float borderSize = 0.05;
-    
-    /* sdf Circle params */
-    float circleSize = 0.3;
-    float circleEdge = 0.5;
-    
-    /* sdf Circle */
-    float sdfCircle = fill(
-        sdCircle(st, posMouse),
-        circleSize,
-        circleEdge
+    vec2 fragPos = gl_FragCoord.xy;
+
+    // Mouse: CSS coords (Y-down) → GL screen pixels (Y-up)
+    vec2 mousePos = vec2(
+        u_mouse.x * u_pixelRatio,
+        u_resolution.y - u_mouse.y * u_pixelRatio
     );
-    
-    float sdf;
-    if (VAR == 0) {
-        /* sdf round rectangle with stroke param adjusted by sdf circle */
-        sdf = sdRoundRect(st, vec2(size), roundness);
-        sdf = stroke(sdf, 0.0, borderSize, sdfCircle) * 4.0;
-    } else if (VAR == 1) {
-        /* sdf circle with fill param adjusted by sdf circle */
-        sdf = sdCircle(st, vec2(0.5));
-        sdf = fill(sdf, 0.6, sdfCircle) * 1.2;
-    } else if (VAR == 2) {
-        /* sdf circle with stroke param adjusted by sdf circle */
-        sdf = sdCircle(st, vec2(0.5));
-        sdf = stroke(sdf, 0.58, 0.02, sdfCircle) * 4.0;
-    } else if (VAR == 3) {
-        /* sdf circle with fill param adjusted by sdf circle */
-        sdf = sdPoly(st - vec2(0.5, 0.45), 0.3, 3);
-        sdf = fill(sdf, 0.05, sdfCircle) * 1.4;
+
+    // --- Mouse influence (computed first so we can use it for SDF blending) ---
+    float normMouseDist = length(fragPos - mousePos) * 2.0 / u_resolution.y;
+    // Flat plateau within mouseRadius, then smooth falloff to mouseFalloff distance
+    float sdfCircle = 1.0 - smoothstep(u_mouseRadius, u_mouseFalloff, normMouseDist);
+
+    // Text layout in screen pixels
+    float textScale = u_resolution.x * u_textScaleFactor / u_textWidth;
+    float textBlockW = u_textWidth * textScale;
+    float textBlockH = u_lineHeight * textScale;
+
+    vec2 textOrigin = vec2(
+        (u_resolution.x - textBlockW) * 0.5,
+        (u_resolution.y + textBlockH) * 0.5
+    );
+
+    // Fragment in text-local space (font units, Y-down from top of line cell)
+    vec2 textPos = vec2(
+        (fragPos.x - textOrigin.x) / textScale,
+        (textOrigin.y - fragPos.y) / textScale
+    );
+
+    // --- Compute continuous text SDF ---
+    // Two versions: hard max (crisp text) and smooth max (clean glow)
+    float screenPxRange = u_distRange * textScale;
+    float smoothK = screenPxRange * u_smoothK;
+    float distCrisp = -1e5;
+    float distSmooth = -1e5;
+
+    for (int i = 0; i < GLYPH_COUNT; i++) {
+        vec4 gp = u_glyphPos[i];
+        vec4 guv = u_glyphUV[i];
+        vec2 gMin = gp.xy;
+        vec2 gMax = gp.xy + gp.zw;
+
+        // Nearest point on glyph bbox (equals textPos when inside)
+        vec2 nearest = clamp(textPos, gMin, gMax);
+        float bboxDist = length(textPos - nearest);
+
+        // Sample MSDF at nearest point
+        vec2 localUV = (nearest - gMin) / gp.zw;
+        vec2 atlasUV = vec2(
+            mix(guv.x, guv.z, localUV.x),
+            mix(guv.y, guv.w, localUV.y)
+        );
+        vec3 msdfSample = texture2D(u_msdf, atlasUV).rgb;
+        float sd = median(msdfSample.r, msdfSample.g, msdfSample.b);
+
+        // Distance from this glyph's surface (positive inside, negative outside)
+        float d = screenPxRange * (sd - 0.5) - bboxDist * textScale;
+        distCrisp = max(distCrisp, d);
+        distSmooth = smax(distSmooth, d, smoothK);
     }
-    
-    vec3 color = vec3(sdf);
-    gl_FragColor = vec4(color.rgb, 1.0);
+
+    // Blend: use crisp max for sharp text, smooth max for clean glow
+    float dist = mix(distCrisp, distSmooth, sdfCircle);
+
+    // --- Variable blur: crisp far from mouse, fully dissolved near mouse ---
+    float blurPx = mix(0.5, screenPxRange * u_blurMultiplier, sdfCircle);
+    float sdf = smoothstep(-blurPx, blurPx, dist);
+
+    // Brightness boost near mouse to keep dissolved text visible
+    sdf *= mix(1.0, u_brightnessBoost, sdfCircle);
+
+    gl_FragColor = vec4(vec3(sdf), 1.0);
 }
